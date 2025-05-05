@@ -146,3 +146,11 @@ python plot.py
 ```
 
 Данные к этому графику в `author-time.tsv`, скрипт их пишет в `res/time.tsv`.
+
+## Что использовалось
+
+ - Сильмарилион -- Д. Р. Р. Толкиен, Web archive -- https://archive.org/details/TheSilmarillionIllustratedJ.R.R.TolkienTedNasmith
+ - Исходники `glibc 2.28.9000 development` -- https://github.com/lattera/glibc/tree/895ef79e04a953cac1493863bcae29ad85657ee1
+ - valgrind, callgrind для замеров
+ - pandas, matplotlib для графика
+

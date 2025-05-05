@@ -3,5 +3,4 @@ call*
 *.out
 *.data
 *.data.old
-*.txt
 res/*
