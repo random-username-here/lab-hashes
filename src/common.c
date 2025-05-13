@@ -1,12 +1,17 @@
 #include "common.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <time.h>
+#include <immintrin.h>
+#include <math.h>
 
-#define NUM_QUERIES 10000000
+#define NUM_MEASUREMENTS 20
+#define NUM_QUERIES 5000000
+#define NUM_BUCKETS 503
 #define MAX_WORD_LEN 32
 
 bool is_word(char c)
@@ -23,8 +28,21 @@ volatile int counts;
 
 int main(int argc, char **argv)
 {
-	if (argc != 2) {
-		printf("Expected file name to read words from as second argument, and nothing more\n");
+
+	if (argc != 2 && argc != 3) {
+		printf("Usage: %s [-p] TEXT_FILE\n", argv[0]);
+		return 1;
+	}
+
+	bool profile_mode = false;
+	int filename_pos = 1;
+	if (strcmp(argv[1], "-p") == 0) {
+		filename_pos++;
+		profile_mode = true;
+	}
+
+	if (filename_pos >= argc) {
+		printf("File name expected\n");
 		return 1;
 	}
 
@@ -32,7 +50,7 @@ int main(int argc, char **argv)
 
 	printf("Reading file...\n");
 
-	FILE *input = fopen(argv[1], "r");
+	FILE *input = fopen(argv[filename_pos], "r");
 	if (!input) {
 		printf("Failed to open `%s`: %s", argv[1], strerror(errno));
 		return 1;
@@ -86,7 +104,7 @@ int main(int argc, char **argv)
 
 	printf("Loading into hash table\n");
 
-	htab_init();
+	htab_init(NUM_BUCKETS);
 
 	for (int i = 0; i < word_pos_len; ++i) {
 		htab_add(source + word_pos[i]);
@@ -101,22 +119,56 @@ int main(int argc, char **argv)
 	// Searching
 	
 	srand(42);
+	size_t *randoms = calloc(NUM_QUERIES, sizeof(*randoms));
+	ASSERT(randoms);
+	for (int i = 0; i < NUM_QUERIES; ++i)
+		randoms[i] = rand() % word_pos_len;
 
 	printf("Searching words\n");
-	printf("Doing %d random queries to word counts\n", NUM_QUERIES);
 
-	clock_t begin = clock();
+	if (!profile_mode) {
+		printf("Doing %d measurements of %d queries\n", NUM_MEASUREMENTS, NUM_QUERIES);
 
-	for (int i = 0; i < NUM_QUERIES; ++i) {
-		const char *word = source + word_pos[rand() % word_pos_len];
-		counts = htab_count(word);
-		//printf("Word `%s` occured %d times\n", word, counts);
-	} 
+		float *times = calloc(NUM_MEASUREMENTS, sizeof(*times));
+		ASSERT(times);
 
-	clock_t end = clock();
+		for (int i = 0; i < NUM_MEASUREMENTS; ++i) {
 
-	printf("It took %f ms\n", (end - begin) * 1000.0 / CLOCKS_PER_SEC);
+			uint64_t begin = __rdtsc();
 
+			for (int j = 0; j < NUM_QUERIES; ++j) {
+				const char *word = source + word_pos[randoms[j]];
+				counts = htab_count(word);
+			}
+
+			uint64_t end = __rdtsc();
+			times[i] = (end - begin) * 1.0f / NUM_QUERIES;
+			printf("time %f\n", times[i]);
+		} 
+
+		float avg_time = 0, std_dev = 0;
+
+		for (int i = 0; i < NUM_MEASUREMENTS; ++i)
+			avg_time += times[i];
+		avg_time /= NUM_MEASUREMENTS;
+
+		for (int i = 0; i < NUM_MEASUREMENTS; ++i) {
+			float diff = (times[i] - avg_time);
+			std_dev += diff * diff;
+		}
+		std_dev /= NUM_MEASUREMENTS;
+		std_dev = sqrtf(std_dev);
+
+		printf("It took %f +- %f cycles per search\n", avg_time, 3 * std_dev);
+
+	} else {
+		printf("Doing %d queries\n", NUM_QUERIES);
+
+		for (int j = 0; j < NUM_QUERIES; ++j) {
+			const char *word = source + word_pos[randoms[j]];
+			counts = htab_count(word);
+		}
+	}
 	// Free afterwards
 
 	htab_deinit();

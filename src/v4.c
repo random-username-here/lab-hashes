@@ -7,24 +7,9 @@
 #include <x86intrin.h>
 #include <stddef.h>
 
-#define MAX_LOAD_FACTOR 20
-#define INITIAL_BITS 4
-
-struct Htab_Node {
-	__m256i word;
-	int count;
-	struct Htab_Node *next;
-};
-
-struct Htab {
-	struct Htab_Node **buckets;
-	int num_bits, num_vals;
-};
-
-// see v3-crc32.s
 unsigned int crc32(__m256i word);
 
-inline bool mm256_str_eq(__m256i a, __m256i b)
+bool str_eq_mm256(__m256i a, __m256i b)
 {
 	// https://github.com/lattera/glibc/blob/895ef79e04a953cac1493863bcae29ad85657ee1/sysdeps/x86_64/multiarch/strcmp-avx2.S#L101
 	//
@@ -55,31 +40,33 @@ void print_mm256(const char* label, __m256i word)
 	printf("%s: ", label);
 	for (int i = 0; i < sizeof(word); ++i)
 		printf("%02x", ((unsigned char*) &word)[i]);
-	printf(" `");
-	for (int i = 0; i < sizeof(word); ++i) {
-		char c = ((char*) &word)[i];
-		if (c == '\0') break;
-		fputc(c, stdout);
-	}
-	printf("`\n");
+	printf("\n");
 }
+
+struct Htab_Node {
+	__m256i key;
+	int count;
+	struct Htab_Node *next;
+};
+
+struct Htab {
+	struct Htab_Node **buckets;
+	int num_buckets, num_vals;
+};
+
 
 static struct Htab htab;
 
-#define lower_n_bits(x, n) ((x) & ((1 << (n)) - 1))
-#define htab_num_buckets() (1 << (htab.num_bits))
-#define htab_bucket_for(x) lower_n_bits(crc32((x)), htab.num_bits)
-
-void htab_grow(void);
+static inline size_t htab_bucket_for(__m256i key)
+{
+	return crc32(key) % htab.num_buckets;
+}
 
 void htab_add_node(struct Htab_Node *node)
 {
 	ASSERT(node);
 
-	if (htab.num_vals / htab_num_buckets() >= MAX_LOAD_FACTOR)
-		htab_grow();
-
-	struct Htab_Node **place = &htab.buckets[htab_bucket_for(node->word)];
+	struct Htab_Node **place = &htab.buckets[htab_bucket_for(node->key)];
 	while (*place != NULL)
 		place = &((*place)->next);
 	*place = node;
@@ -87,31 +74,11 @@ void htab_add_node(struct Htab_Node *node)
 	++htab.num_vals;
 }
 
-void htab_grow()
-{
-	int old_num_buckets = htab_num_buckets();
-	struct Htab_Node **new_buckets = calloc(old_num_buckets * 2, sizeof(*new_buckets));
-	struct Htab_Node **old_buckets = htab.buckets;
-	htab.buckets = new_buckets;
-	htab.num_bits++;
-	htab.num_vals = 0;
-
-	for (int i = 0; i < old_num_buckets; ++i) {
-		for (struct Htab_Node *node = old_buckets[i]; node;) {
-			struct Htab_Node *next = node->next;
-			htab_add_node(node);
-			node = next;
-		}
-	}
-}
-
-
-
 struct Htab_Node *htab_get(__m256i word, const char *orig_ptr)
 {
 	struct Htab_Node *node = htab.buckets[htab_bucket_for(word)];
 	size_t next_off = offsetof(struct Htab_Node, next),
-		   word_off = offsetof(struct Htab_Node, word);
+		   word_off = offsetof(struct Htab_Node, key);
 
 	asm(
 		// setup -- zero ymm4
@@ -161,12 +128,12 @@ struct Htab_Node *htab_get(__m256i word, const char *orig_ptr)
 	return node;
 }
 
-void htab_init(void)
+void htab_init(size_t num_buckets)
 {
-	htab.num_bits = INITIAL_BITS;
-	htab.buckets = calloc(htab_num_buckets(), sizeof(*htab.buckets));
-	ASSERT(htab.buckets);
+	htab.num_buckets = num_buckets;
 	htab.num_vals = 0;
+	htab.buckets = calloc(num_buckets, sizeof(*htab.buckets));
+	ASSERT(htab.buckets);
 }
 
 void htab_add(const char *word_ptr)
@@ -181,7 +148,7 @@ void htab_add(const char *word_ptr)
 	struct Htab_Node *node = aligned_alloc(sizeof(__m256i), sizeof(*node));
 	ASSERT(node);
 	node->count = 1;
-	node->word = word;
+	node->key = word;
 	node->next = NULL;
 	htab_add_node(node);
 }
@@ -194,7 +161,7 @@ int htab_count(const char *word)
 
 void htab_deinit(void)
 {
-	for (int i = 0; i < htab_num_buckets(); ++i) {
+	for (int i = 0; i < htab.num_buckets; ++i) {
 		for (
 				struct Htab_Node *node = htab.buckets[i];
 				node != NULL;
@@ -209,21 +176,23 @@ void htab_deinit(void)
 
 void htab_print_info(void)
 {
-	printf("Number of buckets: %d (%d last bits used as a key)\n", htab_num_buckets(), htab.num_bits);
+	printf("Number of buckets: %d\n", htab.num_buckets);
 	printf("Uniqie words: %d\n", htab.num_vals);
-	printf("Load factor %f\n", htab.num_vals * 1.0 / htab_num_buckets());
+	printf("Load factor %f\n", htab.num_vals * 1.0 / htab.num_buckets);
 }
 
 void htab_dump(void)
 {
 	htab_print_info();
-	for (int i = 0; i < htab_num_buckets(); ++i) {
+	for (int i = 0; i < htab.num_buckets; ++i) {
 		printf("Bucket %d:\n", i);
 		for (
 				struct Htab_Node *node = htab.buckets[i];
 				node != NULL; node = node->next
 		) {
-			printf("\t`%s` x %d (crc %x)\n", (const char*) &node->word, node->count, crc32(node->word));
+			printf("\t`%s` x %d (crc %x)\n",
+				(const char*) &node->key, node->count, crc32(node->key));
 		}
 	}
 }
+
