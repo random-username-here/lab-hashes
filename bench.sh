@@ -9,7 +9,7 @@ make $TARGETS
 echo > res/time.tsv
 
 for PROG in $PROGS; do
-	res/$PROG ./data/tolkien.txt | tee res/$PROG.log
+	stdbuf -o0 res/$PROG ./data/tolkien.txt | tee res/$PROG.log
 done
 
 #for RUN in $(seq 10); do
